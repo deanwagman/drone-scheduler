@@ -1,0 +1,15 @@
+{
+  "name": "traveling_zip",
+  "version": "1.0.0",
+  "description": "Traveling zip interview",
+  "main": "traveling_zip.ts",
+  "scripts": {
+    "simulator": "ts-node traveling_zip.ts"
+  },
+  "author": "Zipline & you!",
+  "devDependencies": {
+    "prettier": "^2.3.2",
+    "ts-node": "^10.1.0",
+    "typescript": "^4.3.5"
+  }
+}
