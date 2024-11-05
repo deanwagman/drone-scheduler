@@ -16,6 +16,8 @@ const ZIP_MAX_CUMULATIVE_RANGE_M = 160 * 1000; // 160 km -> meters
 // The two acceptable priorities
 type Priority = "Emergency" | "Resupply";
 
+const PRIORITY_ORDER: Priority[] = ["Emergency", "Resupply"];
+
 // You shouldn't need to modify this class
 class Hospital {
   name: string;
@@ -92,10 +94,33 @@ class Order {
 class Flight {
   launchTime: number;
   orders: Order[];
+  ageOfOldestOrder: number;
+  flightPathDescription: string;
+  packagePriorityDescription: string;
+  estimatedReturnBatteryPercentage: number;
 
-  constructor(launchTime: number, orders: Order[]) {
+  constructor(launchTime: number, orders: Order[], totalDistance: number) {
     this.launchTime = launchTime;
     this.orders = orders;
+    this.ageOfOldestOrder = orders.reduce(
+      (maxAge, order) => Math.max(maxAge, launchTime - order.time),
+      0
+    );
+    this.flightPathDescription = orders
+      .map((order) => order.hospital.name)
+      .join(" -> ")
+      .concat(" -> Nest");
+    this.packagePriorityDescription = orders
+      .map((order) => order.priority)
+      .join(" -> ");
+
+    this.estimatedReturnBatteryPercentage = Math.round(
+      (1 - totalDistance / ZIP_MAX_CUMULATIVE_RANGE_M) * 100
+    );
+
+    console.log(
+      `Flight launched at ${launchTime} to ${this.flightPathDescription}. Returning at ${this.estimatedReturnBatteryPercentage}% battery`
+    );
   }
 
   toString() {
@@ -114,6 +139,7 @@ class ZipScheduler {
   zipMaxCumulativeRangeM: number;
 
   private _unfulfilledOrders: Order[] = [];
+  private activeFlights: { returnTime: number; flight: Flight }[] = []; // Track active flights with return times
 
   constructor(
     hospitals: Record<string, Hospital>,
@@ -137,26 +163,64 @@ class ZipScheduler {
   }
 
   /**
+   * Calculates the Euclidean distance between two locations.
+   * @param { { northM: number, eastM: number } } pointA - The starting point coordinates.
+   * @param {Hospital} pointB - The destination hospital with coordinates.
+   * @returns {number} - The distance between the two points in meters.
+   */
+  calculateDistanceBetween(
+    pointA: { northM: number; eastM: number },
+    pointB: Hospital
+  ): number {
+    const deltaX = pointB.northM - pointA.northM;
+    const deltaY = pointB.eastM - pointA.eastM;
+    return Math.sqrt(deltaX ** 2 + deltaY ** 2);
+  }
+
+  /**
    * Add a new order to our queue.
    * Note: called every time a new order arrives.
    * @param {Order} order the order just placed.
    */
   queueOrder(order: Order): void {
-    // If this is an emergency, we should prioritize it as right behind the last emergency
     const isEmergency = order.priority === "Emergency";
-
     if (isEmergency) {
-      console.log({ isEmergency });
       const lastEmergencyIndex = this._unfulfilledOrders.findIndex(
-        (o) => o.priority === "Emergency"
+        (o) => o.priority !== "Emergency"
       );
-      if (lastEmergencyIndex !== -1) {
+      if (lastEmergencyIndex === -1) {
+        this._unfulfilledOrders.push(order);
+      } else {
         this._unfulfilledOrders.splice(lastEmergencyIndex, 0, order);
-        return;
       }
+    } else {
+      this._unfulfilledOrders.push(order);
     }
+  }
 
-    this._unfulfilledOrders.push(order);
+  /**
+   * Checks if Zips are available by releasing any that have completed their flights.
+   * @param {number} currentTime - Current time in seconds since midnight.
+   */
+  releaseReturningZips(currentTime: number): void {
+    this.activeFlights = this.activeFlights.filter((flight) => {
+      if (flight.returnTime <= currentTime) {
+        console.log(`Zip returned at ${currentTime}`);
+        return false;
+      }
+      return true;
+    });
+  }
+
+  /**
+   * Calculates the return time for a given flight based on its total distance.
+   * @param {number} launchTime - The launch time of the flight.
+   * @param {number} totalDistance - Total round-trip distance in meters.
+   * @returns {number} - The expected return time in seconds since midnight.
+   */
+  calculateReturnTime(launchTime: number, totalDistance: number): number {
+    const flightTime = totalDistance / this.zipSpeedMps;
+    return launchTime + flightTime;
   }
 
   /**
@@ -167,9 +231,215 @@ class ZipScheduler {
    * @returns {Flight[]} List of Flight objects that launch at this time.
    */
   launchFlights(currentTime: number): Flight[] {
-    // TODO: implement me!
-    // You should remove any orders from `this._unfilfilledOrders` as you go
-    return [];
+    // First, release any Zips that have returned
+    this.releaseReturningZips(currentTime);
+
+    const flights: Flight[] = [];
+    const fulfilledOrders: Order[] = [];
+
+    // Calculate available Zips
+    let availableZips = this.numZips - this.activeFlights.length;
+
+    // No Zips available to dispatch
+    if (availableZips <= 0) {
+      console.log("No Zips available to dispatch");
+      return flights;
+    }
+
+    // Get pending orders up to currentTime
+    let pendingOrders = this._unfulfilledOrders.filter(
+      (order) => order.time <= currentTime
+    );
+
+    if (pendingOrders.length === 0) {
+      // No orders to process
+      return flights;
+    }
+
+    // Sort pending orders by priority (Emergency first), then by age (older orders first)
+    pendingOrders.sort((a, b) => {
+      if (a.priority === b.priority) {
+        return a.time - b.time; // Older orders first
+      }
+      return a.priority === "Emergency" ? -1 : 1; // Emergency orders first
+    });
+
+    console.log({
+      pendingOrders,
+    });
+
+    while (pendingOrders.length > 0 && availableZips > 0) {
+      const { flightOrders, totalDistance } = this.planFlight(
+        pendingOrders,
+        currentTime
+      );
+      const isResupplyOnlyFlight = flightOrders.every(
+        (order) => order.priority === "Resupply"
+      );
+
+      console.log({ flightOrders, totalDistance });
+
+      if (flightOrders.length > 0) {
+        // Reserve last 50% of Zips for Emergency flights
+        if (isResupplyOnlyFlight && availableZips > this.numZips / 2) {
+          console.log("Last 50% of Zips are reserved for Emergency flights");
+          break;
+        }
+
+        // Delay Resupply-only flights if total distance is less than 50% of max range
+        if (
+          isResupplyOnlyFlight &&
+          totalDistance < this.zipMaxCumulativeRangeM * 0.5
+        ) {
+          console.log(
+            "Resupply flight range is less than 50%, delaying launch"
+          );
+          break; // Exit the loop, don't launch this flight yet
+        }
+
+        const flight = new Flight(currentTime, flightOrders, totalDistance);
+        flights.push(flight);
+
+        // Calculate and record return time
+        const returnTime = this.calculateReturnTime(currentTime, totalDistance);
+        this.activeFlights.push({ returnTime, flight });
+
+        fulfilledOrders.push(...flightOrders);
+        availableZips -= 1; // Decrease available Zips directly
+      } else {
+        // No more flights can be planned with remaining orders and constraints
+        break;
+      }
+    }
+
+    // Remove fulfilled orders from _unfulfilledOrders
+    this._unfulfilledOrders = this._unfulfilledOrders.filter(
+      (order) => !fulfilledOrders.includes(order)
+    );
+
+    if (fulfilledOrders.length > 0) {
+      console.log({
+        flightsLaunched: flights.length,
+        activeFlights: this.activeFlights.length,
+        availableZips,
+      });
+    }
+
+    return flights;
+  }
+
+  private findNearestReachableOrder(
+    currentLocation: { northM: number; eastM: number },
+    orders: Order[],
+    totalDistance: number
+  ): { nearestOrderIndex: number; minDistance: number } {
+    let nearestOrderIndex = -1;
+    let minDistance = Infinity;
+
+    // Iterate over the orders to find the nearest reachable one
+    for (let i = 0; i < orders.length; i++) {
+      const order = orders[i];
+      const distance = this.calculateDistanceBetween(
+        currentLocation,
+        order.hospital
+      );
+
+      // Calculate potential total distance including this order
+      const potentialTotalDistance = totalDistance + distance;
+
+      // Include return to Nest
+      const distanceToNest = this.calculateDistanceBetween(order.hospital, {
+        northM: 0,
+        eastM: 0,
+      } as Hospital);
+      const totalTripDistance = potentialTotalDistance + distanceToNest;
+
+      if (
+        distance < minDistance &&
+        totalTripDistance <= this.zipMaxCumulativeRangeM
+      ) {
+        minDistance = distance;
+        nearestOrderIndex = i;
+      }
+    }
+
+    return { nearestOrderIndex, minDistance };
+  }
+
+  /**
+   * Plans a flight by selecting orders based on the nearest neighbor heuristic.
+   * @param {Order[]} orders - List of orders to fulfill.
+   * @param {number} currentTime - Current time in seconds since midnight.
+   * @returns {{ flightOrders: Order[]; totalDistance: number }} - The selected orders and total distance.
+   */
+  private planFlight(
+    orders: Order[],
+    currentTime: number
+  ): { flightOrders: Order[]; totalDistance: number } {
+    let currentLocation = { northM: 0, eastM: 0 }; // Start at the Nest
+    let flightOrders: Order[] = [];
+    let totalDistance = 0;
+
+    // Separate orders by priority
+    const emergencyOrders = orders.filter(
+      (order) => order.priority === "Emergency"
+    );
+    const resupplyOrders = orders.filter(
+      (order) => order.priority === "Resupply"
+    );
+
+    // First, add Emergency orders to the flight
+    while (
+      flightOrders.length < this.maxPackagesPerZip &&
+      emergencyOrders.length > 0
+    ) {
+      const { nearestOrderIndex, minDistance } = this.findNearestReachableOrder(
+        currentLocation,
+        emergencyOrders,
+        totalDistance
+      );
+
+      if (nearestOrderIndex === -1) {
+        break;
+      }
+
+      const nearestOrder = emergencyOrders.splice(nearestOrderIndex, 1)[0];
+      orders.splice(orders.indexOf(nearestOrder), 1); // Remove from main orders list
+      flightOrders.push(nearestOrder);
+      totalDistance += minDistance;
+      currentLocation = nearestOrder.hospital;
+    }
+
+    // If there is remaining capacity and range, add Resupply orders
+    while (
+      flightOrders.length < this.maxPackagesPerZip &&
+      resupplyOrders.length > 0
+    ) {
+      const { nearestOrderIndex, minDistance } = this.findNearestReachableOrder(
+        currentLocation,
+        resupplyOrders,
+        totalDistance
+      );
+
+      if (nearestOrderIndex === -1) {
+        break;
+      }
+
+      const nearestOrder = resupplyOrders.splice(nearestOrderIndex, 1)[0];
+      orders.splice(orders.indexOf(nearestOrder), 1); // Remove from main orders list
+      flightOrders.push(nearestOrder);
+      totalDistance += minDistance;
+      currentLocation = nearestOrder.hospital;
+    }
+
+    // Add distance back to the Nest
+    const returnToNestDistance = this.calculateDistanceBetween(
+      currentLocation,
+      { northM: 0, eastM: 0 } as Hospital
+    );
+    totalDistance += returnToNestDistance;
+
+    return { flightOrders, totalDistance };
   }
 }
 
