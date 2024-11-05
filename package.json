@@ -4,7 +4,7 @@
   "description": "Traveling zip interview",
   "main": "traveling_zip.ts",
   "scripts": {
-    "simulator": "ts-node traveling_zip.ts"
+    "simulator": "ts-node index.ts"
   },
   "author": "Zipline & you!",
   "devDependencies": {

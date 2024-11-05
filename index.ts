@@ -1,5 +1,10 @@
 import { readFileSync } from "fs";
 
+import Hospital from "./Hospital";
+import Flight from "./Flight";
+import Order from "./Order";
+import Runner from "./Runner";
+
 // Each Nest has this many Zips
 const NUM_ZIPS = 10;
 
@@ -20,119 +25,6 @@ const ZIP_MAX_CUMULATIVE_RANGE_M = 160 * 1000; // 160 km -> meters
 type Priority = "Emergency" | "Resupply";
 
 const PRIORITY_ORDER: Priority[] = ["Emergency", "Resupply"];
-
-// You shouldn't need to modify this class
-class Hospital {
-  name: string;
-  northM: number;
-  eastM: number;
-
-  constructor(name: string, northM: number, eastM: number) {
-    this.name = name;
-    this.northM = northM;
-    this.eastM = eastM;
-  }
-
-  /**
-   * Reads and processes a CSV file object that conforms to the hospital.csv schema defined in README.md.
-   * @param {string} file CSV file as a string to read into a dict.
-   * @returns {Record<string, Hospital>} Mapping of hospitals and their coordinates.
-   */
-  static loadFromCsv(file: string): Record<string, Hospital> {
-    const hospitals: Record<string, Hospital> = {};
-    const lines = file.split("\n");
-    lines.forEach((line) => {
-      if (line.trim() === "") return; // Skip empty lines
-      const [name, northM, eastM] = line
-        .split(",")
-        .map((value) => value.trim());
-      if (!name || isNaN(parseInt(northM, 10)) || isNaN(parseInt(eastM, 10)))
-        return; // Skip invalid rows
-      hospitals[name] = new Hospital(
-        name,
-        parseInt(northM, 10),
-        parseInt(eastM, 10)
-      );
-    });
-    return hospitals;
-  }
-}
-
-// You shouldn't need to modify this class
-class Order {
-  time: number;
-  hospital: Hospital;
-  priority: Priority;
-
-  constructor(time: number, hospital: Hospital, priority: Priority) {
-    this.time = time;
-    this.hospital = hospital;
-    this.priority = priority;
-  }
-
-  /**
-   * Reads and processes a CSV file object that conforms to the orders.csv schema defined in README.md.
-   * Ok to assume the orders are sorted.
-   * @param {string} file CSV file as a string to read into a dict.
-   * @param {Record<string, Hospital>} hospitals mapping of hospital name to Hospital objects
-   * @returns {Order[]} List of Order objects.
-   */
-  static loadFromCsv(
-    file: string,
-    hospitals: Record<string, Hospital>
-  ): Order[] {
-    const lines = file.split("\n");
-    const orders: Order[] = lines
-      .map((line) => {
-        if (line.trim() === "") return null; // Skip empty lines
-        const [time, hospitalName, priority] = line
-          .split(",")
-          .map((value) => value.trim());
-        if (!time || !hospitalName || !priority || !hospitals[hospitalName])
-          return null; // Skip invalid rows
-        return new Order(
-          parseInt(time, 10),
-          hospitals[hospitalName],
-          priority as Priority
-        );
-      })
-      .filter((order) => order !== null) as Order[];
-    return orders;
-  }
-}
-
-class Flight {
-  launchTime: number;
-  orders: Order[];
-  estimatedReturnBatteryPercentage: number;
-  flightPath: string;
-
-  constructor(launchTime: number, orders: Order[], totalDistance: number) {
-    this.launchTime = launchTime;
-    this.orders = orders;
-    this.estimatedReturnBatteryPercentage =
-      100 - (totalDistance / ZIP_MAX_CUMULATIVE_RANGE_M) * 100;
-    this.flightPath = this.getFlightPath();
-  }
-
-  getFlightPath(): string {
-    return this.orders
-      .map((order) => `${order.hospital.name} (${order.priority})`)
-      .join(" -> ")
-      .concat(" -> Nest");
-  }
-
-  getPriorityPath(): string {
-    return this.orders
-      .map((order) => order.priority)
-      .join(" -> ")
-      .concat(" -> Nest");
-  }
-
-  toString() {
-    return `<Flight @ ${this.launchTime} to ${this.getFlightPath()}>`;
-  }
-}
 
 class ZipScheduler {
   hospitals: Record<string, Hospital>;
@@ -230,7 +122,7 @@ class ZipScheduler {
    * Calculates the return time based on total distance and Zip speed.
    */
   calculateReturnTime(launchTime: number, totalDistance: number): number {
-    return launchTime + Math.ceil(totalDistance / this.zipSpeedMps);
+    return launchTime + totalDistance / this.zipSpeedMps;
   }
 
   /**
@@ -338,80 +230,6 @@ class ZipScheduler {
     });
 
     return { flightOrders, totalDistance };
-  }
-}
-
-/**
- * A simulation runner that can playback order CSVs as if the day were
- * progressing.
- */
-class Runner {
-  hospitals: Record<string, Hospital>;
-  orders: Order[];
-  scheduler: ZipScheduler;
-
-  constructor(hospitalsPath: string, ordersPath: string) {
-    this.hospitals = Hospital.loadFromCsv(readFileSync(hospitalsPath, "utf8"));
-    this.orders = Order.loadFromCsv(
-      readFileSync(ordersPath, "utf8"),
-      this.hospitals
-    );
-
-    this.scheduler = new ZipScheduler(
-      this.hospitals,
-      NUM_ZIPS,
-      MAX_PACKAGES_PER_ZIP,
-      ZIP_SPEED_MPS,
-      ZIP_MAX_CUMULATIVE_RANGE_M
-    );
-  }
-
-  run() {
-    const secondsPerDay = 24 * 60 * 60;
-    for (
-      let secondsSinceMidnight =
-        this.orders.length > 0 ? this.orders[0].time - 1 : 0;
-      secondsSinceMidnight < secondsPerDay;
-      secondsSinceMidnight++
-    ) {
-      this._queuePendingOrders(secondsSinceMidnight);
-
-      if (secondsSinceMidnight % 60 === 0) {
-        this._updateLaunchFlights(secondsSinceMidnight);
-      }
-    }
-    console.log(
-      `${this.scheduler.unfulfilledOrders.length} unfulfilled orders at the end of the day`
-    );
-
-    if (this.scheduler.unfulfilledOrders.length > 0) {
-      console.log("Unfulfilled orders:");
-      for (const order of this.scheduler.unfulfilledOrders) {
-        console.log(
-          `Order at ${order.time} to ${order.hospital.name} with priority ${order.priority}`
-        );
-      }
-    }
-  }
-
-  private _queuePendingOrders(secondsSinceMidnight: number) {
-    while (this.orders.length && this.orders[0].time === secondsSinceMidnight) {
-      const order: Order = this.orders.shift()!;
-      console.log(
-        `[${secondsSinceMidnight}] ${order.priority} order received to ${order.hospital.name}`
-      );
-      this.scheduler.queueOrder(order);
-    }
-  }
-
-  private _updateLaunchFlights(secondsSinceMidnight: number) {
-    const flights = this.scheduler.launchFlights(secondsSinceMidnight);
-    if (flights.length) {
-      console.log(`[${secondsSinceMidnight}] Scheduling flights:`);
-      for (const flight of flights) {
-        console.log(flight);
-      }
-    }
   }
 }
 
