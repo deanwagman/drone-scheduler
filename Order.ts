@@ -1,16 +1,18 @@
 import Hospital from "./Hospital";
 
 // The two acceptable priorities
-type Priority = "Emergency" | "Resupply";
+export type Priority = "Emergency" | "Resupply";
 
 const PRIORITY_ORDER: Priority[] = ["Emergency", "Resupply"];
 
 export default class Order {
+  id: string;
   time: number;
   hospital: Hospital;
   priority: Priority;
 
   constructor(time: number, hospital: Hospital, priority: Priority) {
+    this.id = `Order--${hospital.name}-${time}`;
     this.time = time;
     this.hospital = hospital;
     this.priority = priority;

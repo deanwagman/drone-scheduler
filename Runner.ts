@@ -4,6 +4,8 @@ import Hospital from "./Hospital";
 import Order from "./Order";
 import ZipScheduler from "./FlightScheduler";
 
+import logger from "./logger";
+
 // Each Nest has this many Zips
 const NUM_ZIPS = 10;
 
@@ -24,6 +26,7 @@ const ZIP_MAX_CUMULATIVE_RANGE_M = 160 * 1000; // 160 km -> meters
 export default class Runner {
   hospitals: Record<string, Hospital>;
   orders: Order[];
+  totalOrderCount: number = 0;
   scheduler: ZipScheduler;
 
   constructor(hospitalsPath: string, ordersPath: string) {
@@ -32,6 +35,7 @@ export default class Runner {
       readFileSync(ordersPath, "utf8"),
       this.hospitals
     );
+    this.totalOrderCount = this.orders.length;
 
     this.scheduler = new ZipScheduler(
       this.hospitals,
@@ -56,15 +60,17 @@ export default class Runner {
         this._updateLaunchFlights(secondsSinceMidnight);
       }
     }
-    console.log(
-      `${this.scheduler.unfulfilledOrders.length} unfulfilled orders at the end of the day`
+
+    logger.info("=== End of day ===");
+    logger.info(`Total orders: ${this.scheduler.completeOrderCount}`);
+    logger.info(
+      `${this.scheduler.unfulfilledOrdersCount} unfulfilled orders at the end of the day\n`
     );
 
-    if (this.scheduler.unfulfilledOrders.length > 0) {
-      console.log("Unfulfilled orders:");
-      for (const order of this.scheduler.unfulfilledOrders) {
-        console.log(
-          `Order at ${order.time} to ${order.hospital.name} with priority ${order.priority}`
+    if (this.scheduler.unfulfilledOrdersCount > 0) {
+      for (const order of this.scheduler.getUnfulfilledOrders()) {
+        logger.info(
+          `Unfulfilled order at the end of the day: ${order.hospital.name} (${order.priority}), ${order.time}`
         );
       }
     }
@@ -73,9 +79,7 @@ export default class Runner {
   private _queuePendingOrders(secondsSinceMidnight: number) {
     while (this.orders.length && this.orders[0].time === secondsSinceMidnight) {
       const order: Order = this.orders.shift()!;
-      console.log(
-        `[${secondsSinceMidnight}] ${order.priority} order received to ${order.hospital.name}`
-      );
+
       this.scheduler.queueOrder(order);
     }
   }
@@ -83,9 +87,15 @@ export default class Runner {
   private _updateLaunchFlights(secondsSinceMidnight: number) {
     const flights = this.scheduler.launchFlights(secondsSinceMidnight);
     if (flights.length) {
-      console.log(`[${secondsSinceMidnight}] Scheduling flights:`);
+      logger.info(
+        `[${secondsSinceMidnight}] ${flights.length} flights launched`
+      );
       for (const flight of flights) {
-        console.log(flight);
+        logger.info(
+          `[${secondsSinceMidnight}] ${
+            flight.orders.length
+          } orders dispatched to ${flight.getFlightPath()}`
+        );
       }
     }
   }

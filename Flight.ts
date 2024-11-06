@@ -1,5 +1,7 @@
 import Order from "./Order";
 
+import logger from "./logger";
+
 // Zips can fly a total roundtrip distance (m)
 const ZIP_MAX_CUMULATIVE_RANGE_M = 160 * 1000; // 160 km -> meters
 

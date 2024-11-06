@@ -8,8 +8,12 @@
   },
   "author": "Zipline & you!",
   "devDependencies": {
+    "@types/winston": "^2.4.4",
     "prettier": "^2.3.2",
     "ts-node": "^10.1.0",
     "typescript": "^4.3.5"
+  },
+  "dependencies": {
+    "winston": "^3.16.0"
   }
 }
