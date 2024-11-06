@@ -87,13 +87,13 @@ export default class ZipScheduler {
 
     this._unfulfilledOrders.enqueue(order);
     logger.info(
-      `Order queued: ${order.hospital.name} (${
-        order.priority
-      }), Unfulfilled Orders: ${
-        this.unfulfilledOrdersCount
-      }, Emergency Orders: ${this.countByPriority(
+      `Order queued: ${order.hospital.name} (${order.priority}):
+        Unfulfilled Orders: ${
+          this.unfulfilledOrdersCount
+        }, Emergency Orders: ${this.countByPriority(
         "Emergency"
-      )}, Resupply Orders: ${this.countByPriority("Resupply")}`
+      )}, Resupply Orders: ${this.countByPriority("Resupply")}
+        Available Zips: ${this.numZips - this.activeFlights.length}`
     );
   }
 
@@ -113,8 +113,8 @@ export default class ZipScheduler {
   releaseReturningZips(currentTime: number): void {
     this.activeFlights = this.activeFlights.filter((flightEntry) => {
       if (flightEntry.returnTime <= currentTime) {
-        logger.info(`Zip returned: ${flightEntry.flight}`);
         this.completeOrderCount += flightEntry.flight.orders.length;
+        logger.info(`<=== Flight completed`);
 
         return false; // Remove from activeFlights
       }
@@ -151,10 +151,6 @@ export default class ZipScheduler {
         break;
       }
 
-      logger.info(
-        `Emergency Orders: ${emergencyCount}, Resupply Orders: ${resupplyCount}, Next: ${orders[0].id}`
-      );
-
       if (emergencyCount && availableZips < 1) {
         logger.error(
           `Skipping emergency flight due to insufficient available Zips. Available Zips: ${
@@ -166,7 +162,7 @@ export default class ZipScheduler {
 
       // If this is not an emergency flight and we have fewer than RESERVED_EMERGENCY_ZIPS available, skip
       if (!emergencyCount && availableZips < RESERVED_EMERGENCY_ZIPS) {
-        logger.warn(
+        logger.verbose(
           `Skipping resupply flight due to insufficient resupply Zips. Zips: ${availableZips}, Pending Resupply Orders: ${resupplyCount}`
         );
         break;
@@ -190,11 +186,13 @@ export default class ZipScheduler {
       this.activeFlights.push({ returnTime, flight });
 
       availableZips -= 1;
-
-      logger.info(`===> Flight launched: AvailableZips: ${availableZips}`);
     }
 
     return flights;
+  }
+
+  get activeFlightsCount(): number {
+    return this.activeFlights.length;
   }
 
   /**
@@ -208,62 +206,102 @@ export default class ZipScheduler {
     let totalDistance = 0;
     let currentLocation = { northM: 0, eastM: 0 }; // Start at Nest
 
-    const availableOrders = this._unfulfilledOrders.toArray();
+    // Clone the unfulfilled orders to avoid mutating the original list
+    const availableOrders = this.getUnfulfilledOrders();
 
     while (
       flightOrders.length < this.maxPackagesPerZip &&
       availableOrders.length > 0
     ) {
-      // Find the nearest order
-      let nearestOrderIndex = -1;
-      let nearestDistance = Infinity;
-      const isEmergency = availableOrders[]
-
-      availableOrders.forEach((order, index) => {
-        const distance = this.calculateDistance(
-          currentLocation,
-          order.hospital
-        );
-
-        if (distance < nearestDistance)
-          nearestDistance = distance;
-          nearestOrderIndex = index;
-        }
-      });
-
-      if (nearestOrderIndex === -1) break;
-
-      const nearestOrder = availableOrders[nearestOrderIndex];
-      const distanceToOrder = this.calculateDistance(
-        currentLocation,
-        nearestOrder.hospital
+      // Separate emergency and non-emergency orders
+      const emergencyOrders = availableOrders.filter(
+        (order) => order.priority === "Emergency"
       );
-      const distanceBackToNest = this.calculateDistance(nearestOrder.hospital, {
-        northM: 0,
-        eastM: 0,
-      });
+      const nonEmergencyOrders = availableOrders.filter(
+        (order) => order.priority !== "Emergency"
+      );
+
+      let selectedOrder: Order | null = null;
+      let nearestDistance = Infinity;
+      let selectedOrderIndex = -1;
+
+      // Function to find the nearest order from a list
+      const findNearestOrder = (
+        orders: Order[]
+      ): { order: Order; index: number; distance: number } | null => {
+        let nearest = null;
+        let minDistance = Infinity;
+        let index = -1;
+
+        orders.forEach((order, idx) => {
+          const distance = this.calculateDistance(
+            currentLocation,
+            order.hospital
+          );
+          if (distance < minDistance) {
+            minDistance = distance;
+            nearest = order;
+            index = availableOrders.indexOf(order); // Get the index in the original availableOrders
+          }
+        });
+
+        if (nearest) {
+          return { order: nearest, index, distance: minDistance };
+        }
+        return null;
+      };
+
+      // Attempt to find the nearest emergency order
+      const nearestEmergency = findNearestOrder(emergencyOrders);
+
+      if (nearestEmergency) {
+        selectedOrder = nearestEmergency.order;
+        selectedOrderIndex = nearestEmergency.index;
+        nearestDistance = nearestEmergency.distance;
+      } else {
+        // If no emergency orders, find the nearest non-emergency order
+        const nearestNonEmergency = findNearestOrder(nonEmergencyOrders);
+        if (nearestNonEmergency) {
+          selectedOrder = nearestNonEmergency.order;
+          selectedOrderIndex = nearestNonEmergency.index;
+          nearestDistance = nearestNonEmergency.distance;
+        }
+      }
+
+      // If no suitable order is found, break the loop
+      if (!selectedOrder || selectedOrderIndex === -1) break;
+
+      // Calculate distances
+      const distanceToOrder = nearestDistance;
+      const distanceBackToNest = this.calculateDistance(
+        selectedOrder.hospital,
+        {
+          northM: 0,
+          eastM: 0,
+        }
+      );
 
       const newTotalDistance =
         totalDistance + distanceToOrder + distanceBackToNest;
 
-      // Check if the order can be fulfilled
+      // Check if the order can be fulfilled within the range
       if (newTotalDistance <= this.zipMaxCumulativeRangeM) {
-        flightOrders.push(nearestOrder);
+        flightOrders.push(selectedOrder);
         totalDistance += distanceToOrder;
-        currentLocation = nearestOrder.hospital;
+        currentLocation = selectedOrder.hospital;
 
-        // Remove the order from the availableOrders
-        availableOrders.splice(nearestOrderIndex, 1);
+        // Remove the order from availableOrders
+        availableOrders.splice(selectedOrderIndex, 1);
       } else {
-        // Remove the order from the availableOrders to prevent repeated attempts
-        availableOrders.splice(nearestOrderIndex, 1);
+        // Remove the order to prevent repeated attempts
+        availableOrders.splice(selectedOrderIndex, 1);
         logger.verbose(
-          `Order cannot be fulfilled due to distance constraints. Skipping. Order: ${nearestOrder.id}, Distance: ${newTotalDistance}m, Max Range: ${this.zipMaxCumulativeRangeM}m`
+          `Order cannot be fulfilled due to distance constraints. Skipping. Order: ${selectedOrder.id}, Distance: ${newTotalDistance}m, Max Range: ${this.zipMaxCumulativeRangeM}m`
         );
       }
     }
 
-    // Add distance back to Nest
+    // Add distance back to Nest if there are any flight orders
     if (flightOrders.length > 0) {
       totalDistance += this.calculateDistance(currentLocation, {
         northM: 0,

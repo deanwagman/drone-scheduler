@@ -88,11 +88,11 @@ export default class Runner {
     const flights = this.scheduler.launchFlights(secondsSinceMidnight);
     if (flights.length) {
       logger.info(
-        `[${secondsSinceMidnight}] ${flights.length} flights launched`
+        `===> [${secondsSinceMidnight}] ${flights.length} flights launched`
       );
       for (const flight of flights) {
         logger.info(
-          `[${secondsSinceMidnight}] ${
+          `     [${secondsSinceMidnight}] ${
             flight.orders.length
           } orders dispatched to ${flight.getFlightPath()}`
         );
